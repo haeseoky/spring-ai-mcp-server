@@ -2,8 +2,8 @@ package com.example.springaimcpserver.controller;
 
 import com.example.springaimcpserver.model.DocumentRequest;
 import com.example.springaimcpserver.model.DocumentResponse;
-import com.example.springaimcpserver.service.impl.ExcelGeneratorService;
-import com.example.springaimcpserver.service.impl.PowerPointGeneratorService;
+import com.example.springaimcpserver.service.DocumentGeneratorFactory;
+import com.example.springaimcpserver.service.DocumentGeneratorService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -27,8 +27,7 @@ import java.util.concurrent.CompletableFuture;
 @RequiredArgsConstructor
 public class DocumentController {
 
-    private final ExcelGeneratorService excelGeneratorService;
-    private final PowerPointGeneratorService powerPointGeneratorService;
+    private final DocumentGeneratorFactory documentGeneratorFactory;
     
     @Value("${app.document.temp-dir}")
     private String tempDir;
@@ -43,15 +42,8 @@ public class DocumentController {
     public CompletableFuture<ResponseEntity<DocumentResponse>> createDocument(@Valid @RequestBody DocumentRequest request) {
         log.info("문서 생성 요청: {}", request);
         
-        CompletableFuture<DocumentResponse> futureResponse;
-        
-        if (request.getDocumentType() == DocumentRequest.DocumentType.EXCEL) {
-            futureResponse = excelGeneratorService.generateDocument(request);
-        } else if (request.getDocumentType() == DocumentRequest.DocumentType.POWERPOINT) {
-            futureResponse = powerPointGeneratorService.generateDocument(request);
-        } else {
-            throw new IllegalArgumentException("지원하지 않는 문서 유형: " + request.getDocumentType());
-        }
+        DocumentGeneratorService generatorService = documentGeneratorFactory.getGenerator(request.getDocumentType());
+        CompletableFuture<DocumentResponse> futureResponse = generatorService.generateDocument(request);
         
         return futureResponse.thenApply(response -> {
             URI location = ServletUriComponentsBuilder
@@ -72,21 +64,23 @@ public class DocumentController {
      */
     @GetMapping("/{documentId}")
     public ResponseEntity<DocumentResponse> getDocumentStatus(@PathVariable String documentId) {
-        DocumentResponse response;
-        
-        // 문서 유형에 따라 적절한 서비스 사용
-        try {
-            response = excelGeneratorService.getDocumentStatus(documentId);
-            if (response.getStatus() != DocumentResponse.DocumentStatus.FAILED && 
-                    response.getErrorMessage() == null) {
-                return ResponseEntity.ok(response);
+        // 모든 생성기 서비스에서 문서 상태 조회 시도
+        for (DocumentRequest.DocumentType documentType : DocumentRequest.DocumentType.values()) {
+            try {
+                DocumentGeneratorService generatorService = documentGeneratorFactory.getGenerator(documentType);
+                DocumentResponse response = generatorService.getDocumentStatus(documentId);
+                
+                if (response.getStatus() != DocumentResponse.DocumentStatus.FAILED || 
+                        response.getErrorMessage() == null || 
+                        !response.getErrorMessage().contains("찾을 수 없습니다")) {
+                    return ResponseEntity.ok(response);
+                }
+            } catch (Exception e) {
+                log.debug("문서 조회 중 오류 발생: {}", e.getMessage());
             }
-        } catch (Exception e) {
-            log.debug("엑셀 문서 조회 실패, PPT 문서 조회 시도: {}", e.getMessage());
         }
         
-        response = powerPointGeneratorService.getDocumentStatus(documentId);
-        return ResponseEntity.ok(response);
+        return ResponseEntity.notFound().build();
     }
 
     /**
